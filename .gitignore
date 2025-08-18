@@ -1,0 +1,10 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.development
+.env.production
+.webui_secret_key
+
+# Logs
+*.log
+logs/
