@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    container_name: pipelines
+    ports:
+      - "9099:9099"
+    environment:
+      - PIPELINES_URLS=
+    restart: unless-stopped
+    volumes:
+      - ./basic_pipe.py:/app/pipelines/basic_pipe.py
+      - ./basic_pipe_with_oai.py:/app/pipelines/basic_pipe_with_oai.py
+      - ./aicemonitor.py:/app/pipelines/aicemonitor.py
+      - ../.env:/app/.env
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_BASE_URLS=http://pipelines:9099
+      - OPENAI_API_KEYS=0p3n-w3bu!
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+    restart: unless-stopped
+    volumes:
+      - open-webui:/app/backend/data
+      - ../.env:/app/.env
+    depends_on:
+      - pipelines
+
+volumes:
+  open-webui:
