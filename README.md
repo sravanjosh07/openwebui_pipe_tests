@@ -44,7 +44,7 @@ Copy `.env.example` to each subfolder as `.env` and configure:
 ```bash
 OPENAI_API_KEY="sk-..."
 API_TOKEN="Bearer eyJ..."  
-EVENT_MONITORING_PROFILE_ID="01JZ..."
-AICEBERG_API_URL="https://prod.api.aiceberg.ai/eap/v0/event"
+EVENT_MONITORING_PROFILE_ID="01J..."
+AICEBERG_API_URL="https://prod..."
 WEBUI_SECRET_KEY="some-random-string"
 ```
