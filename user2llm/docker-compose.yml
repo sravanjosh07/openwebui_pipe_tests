@@ -13,7 +13,7 @@ services:
       - ./basic_pipe.py:/app/pipelines/basic_pipe.py
       - ./basic_pipe_with_oai.py:/app/pipelines/basic_pipe_with_oai.py
       - ./aicemonitor.py:/app/pipelines/aicemonitor.py
-      - ../.env:/app/.env
+      - ./.env:/app/.env
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
     volumes:
       - open-webui:/app/backend/data
-      - ../.env:/app/.env
+      - ./.env:/app/.env
     depends_on:
       - pipelines
 
