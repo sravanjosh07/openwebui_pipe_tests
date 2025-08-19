@@ -15,6 +15,8 @@ cd rag
 docker-compose up -d
 ```
 
+Note: The .env file is copied to this folder so it can access your API keys.
+
 1. Go to http://localhost:8080
 2. Upload a PDF in the Documents section
 3. Ask questions using # before your query
