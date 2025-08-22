@@ -32,6 +32,33 @@ docker-compose down && cd ../other-folder && docker-compose up -d
 
 Both run OpenWebUI on http://localhost:8080
 
+## Troubleshooting Container Conflicts
+
+If you encounter container name conflicts when switching between projects:
+
+```bash
+# Option 1: Stop all containers and remove conflicts
+docker stop $(docker ps -q)
+docker rm pipelines open-webui
+cd desired-project && docker-compose up -d
+
+# Option 2: Go to root and properly stop first
+cd .. && docker-compose down
+cd desired-project && docker-compose up -d
+
+# Option 3: Force clean all containers (nuclear option)
+docker stop $(docker ps -q)
+docker rm $(docker ps -aq)
+cd desired-project && docker-compose up -d
+
+# Check running containers
+docker ps
+
+# View logs if needed
+docker logs open-webui
+docker logs pipelines
+```
+
 ## Files
 
 - `ARTICLE.md` - Technical deep dive and lessons learned
