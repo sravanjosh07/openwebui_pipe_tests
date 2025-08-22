@@ -96,6 +96,7 @@ for incoming_line in sys.stdin:
         log("← client (unknown frame)")
 
     if method == "initialize" and is_call(request):
+        # continue
         params = request.get("params", {})
         log(f"initialize → {json.dumps(params)}")
     elif method == "notifications/initialized" and is_notification(request):
