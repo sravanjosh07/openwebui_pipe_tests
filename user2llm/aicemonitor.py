@@ -10,7 +10,8 @@ import openai
 from typing import List, Dict, Any, Union, Generator, Iterator
 from pydantic import BaseModel, Field
 
-
+#TODO: add different models, different api keys. 
+# TODO: how do we differentiate the source of the request.
 class Pipeline:
     """
     AiceMonitor content filtering pipeline
@@ -185,11 +186,15 @@ class Pipeline:
         user_message: str, 
         model_id: str, 
         messages: List[dict], 
-        body: dict
+        body: dict # TODO: what is body?
     ) -> Union[str, Generator, Iterator]:
         """
         Main pipeline function - ML content check + OpenAI response
         """
+        print(user_message)
+        print(f"🛠️ Model: {model_id}, Messages: {len(messages)}")
+        print(f"🔧 Body keys: {body}")
+
         # Skip OpenWebUI background tasks (they start with "### Task:")
         if user_message.startswith("### Task:"):
             print(f"⏭️ Skipping OpenWebUI background task")

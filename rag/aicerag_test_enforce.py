@@ -89,10 +89,10 @@ class Pipeline:
             }
             payload = {
                 "profile_id": self.profile_id,
-                # TODO: 
+                "llm_mode_override":"enforce",  # Enforce policy on input
                 "input": message
             }
-            # TODO: add enfore in the post to get the response from the api
+            
             # Add RAG context if available
             if rag_context:
                 payload["rag_context"] = rag_context
