@@ -116,5 +116,5 @@ services:
 OPENAI_API_KEY="sk-..."
 API_TOKEN="Bearer eyJ..."  
 EVENT_MONITORING_PROFILE_ID="01JZ..."
-AICEBERG_API_URL="https://prod.api.aiceberg.ai/eap/v0/event"
+AICEBERG_API_URL="https://test.api.aiceberg.ai/eap/v0/event"
 ```

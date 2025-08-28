@@ -23,7 +23,7 @@ load_dotenv()
 # =============================================================================
 # SETTINGS (you can change these in your .env file)
 # =============================================================================
-API_URL = os.environ.get("AICEBERG_API_URL", "https://prod.api.aiceberg.ai/eap/v0/event")
+API_URL = os.environ.get("AICEBERG_API_URL", "https://test.api.aiceberg.ai/eap/v0/event")
 API_TOKEN = os.environ.get("AICEBERG_API_TOKEN", "YOUR_API_KEY")
 PROFILE_ID = os.environ.get("AICEBERG_PROFILE_ID", "xxxx")
 TIMEOUT_SECONDS = float(os.environ.get("AICEBERG_TIMEOUT_SECS", "0.8"))

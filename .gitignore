@@ -10,3 +10,9 @@
 *.log
 logs/
 .venv
+*.bin
+*.db
+*.sqlite3
+__pycache__/
+*.pyc
+*.webui_secret_key
