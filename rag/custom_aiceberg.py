@@ -49,7 +49,7 @@ class Pipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline and load configuration from environment variables."""
-        self.name = "Custom AIceberg RAG Monitor"
+        self.name = "Custom AIceberg Monitor"
         self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")
         self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")
         self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")
@@ -258,11 +258,14 @@ class Pipeline:
         model_id: str,
         messages: List[dict],
         body: dict,
+        __request__=None,
+        __metadata__=None,
     ) -> Optional[str]:
         """Monitor and route chat completions to OpenAI or Anthropic."""
 
-        print("--- RAG MONITOR (BUNDLE-STYLE) ---")
+        print("--- AICEBERG MONITOR ---")
         print(f"User message: {user_message}")
+        # print(f"messages: {messages}")
 
         # Skipping internal synthetic tasks
         if user_message.startswith("### Task:"):
@@ -286,7 +289,7 @@ class Pipeline:
         original_message = (payload.get("messages", messages) or []).copy()
         updated_message = []
         if original_message and original_message[-1].get("role") == "user":
-            print(f"🔄 Replacing: {original_message[-1]['content']} with: {redacted_user_message}")
+            # print(f"Replacing: {original_message[-1]['content']} with: {redacted_user_message}")
             original_message[-1]["content"] = redacted_user_message
 
         updated_message = original_message
@@ -294,9 +297,6 @@ class Pipeline:
 
         # 4) Monitor complete agent-to-model prompt bundle
         ab_message_result = self.check_with_aiceberg(updated_message, "agent_to_model_prompt")
-        redacted_agent_message = ab_message_result.get("redacted_text", updated_message)
-        payload["messages"] = redacted_agent_message
-
         a2m_event_id = ab_message_result.get("event_id")
 
         # 5) Call LLM provider (OpenAI/Anthropic)
