@@ -279,6 +279,7 @@ class Pipeline:
 
         # 2) Clean payload: override model and remove OpenWebUI-specific fields
         payload = {**body, "model": self.valves.target_model}
+        # Popping them to avoid issues with openai API (preventive step to avoid unexpected fields)
         for key in ("user", "chat_id", "title"):
             payload.pop(key, None)
 
