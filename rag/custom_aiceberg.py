@@ -258,8 +258,6 @@ class Pipeline:
         model_id: str,
         messages: List[dict],
         body: dict,
-        __request__=None,
-        __metadata__=None,
     ) -> Optional[str]:
         """Monitor and route chat completions to OpenAI or Anthropic."""
 
