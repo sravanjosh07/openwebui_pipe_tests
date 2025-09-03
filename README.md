@@ -1,5 +1,11 @@
 # OpenWebUI Monitoring Experiments
 
+## 🟢 Current Status
+**WORKING** - Both containers are running successfully:
+- ✅ OpenWebUI accessible at http://localhost:8080
+- ✅ Pipelines loaded: `aiceberg_rag` and `aicerag`
+- ✅ All monitoring systems operational
+
 Two different approaches to monitoring LLM conversations with OpenWebUI and Aiceberg backend.
 
 ## Projects

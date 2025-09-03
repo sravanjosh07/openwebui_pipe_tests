@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant User
+    participant OpenWebUI
+    participant Pipeline as AIceberg Pipeline
+    participant AIceberg as AIceberg API
+    participant LLM as OpenAI/LLM
+    participant Tools as Function Tools
+
+    %% User Query with Tools
+    User->>OpenWebUI: "Calculate 25 * 17 and then find square root"
+    OpenWebUI->>Pipeline: pipe(user_message, model_id, messages, body)
+    
+    %% Phase 1: Monitor User Query
+    Pipeline->>AIceberg: check_with_aiceberg("Calculate 25 * 17...", "user_query")
+    AIceberg-->>Pipeline: {event_id: "evt_123", event_result: "passed"}
+    
+    %% Phase 2: Complete Prompt Bundle
+    Pipeline->>AIceberg: check_with_aiceberg(complete_messages, "complete_prompt")
+    AIceberg-->>Pipeline: {event_id: "evt_124", event_result: "passed"}
+    
+    %% Phase 3: LLM Call with Tool Decision
+    Pipeline->>LLM: POST /v1/chat/completions (with tools available)
+    LLM-->>Pipeline: "I'll use the multiply tool first..."
+    
+    %% Phase 4: Tool Execution (Internal - No LLM call)
+    Note over Pipeline,Tools: Tool calls happen internally<br/>No additional LLM API calls<br/>Your pipeline doesn't see these
+    LLM->>Tools: multiply(25, 17)
+    Tools-->>LLM: 425
+    LLM->>Tools: sqrt(425)
+    Tools-->>LLM: 20.616...
+    
+    %% Phase 5: Final LLM Response
+    LLM-->>Pipeline: "25 * 17 = 425, and √425 ≈ 20.62"
+    
+    %% Phase 6: Monitor Model Response
+    Pipeline->>AIceberg: check_with_aiceberg("25 * 17 = 425...", "model_response", evt_124)
+    AIceberg-->>Pipeline: {event_result: "passed"}
+    
+    %% Phase 7: Optional Mirror Response
+    Pipeline->>AIceberg: check_with_aiceberg("25 * 17 = 425...", "llm_response", evt_123)
+    AIceberg-->>Pipeline: {event_result: "passed"}
+    
+    %% Return to User
+    Pipeline-->>OpenWebUI: "25 * 17 = 425, and √425 ≈ 20.62"
+    OpenWebUI-->>User: "25 * 17 = 425, and √425 ≈ 20.62"

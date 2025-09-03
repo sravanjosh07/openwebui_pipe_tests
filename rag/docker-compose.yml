@@ -10,18 +10,23 @@ services:
       - PIPELINES_URLS=
     restart: unless-stopped
     volumes:
-      - ./aicerag.py:/app/pipelines/aicerag.py
+      - ./aicerag.py:/app/pipelines/aicerag.py  
+      - ./aiceberg_rag.py:/app/pipelines/aiceberg_rag.py 
+      - ./custom_aiceberg.py:/app/pipelines/custom_aiceberg.py     
       - ./.env:/app/.env
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     ports:
-      - "8080:8080"
+      - "3000:8080"
     environment:
       - OPENAI_API_BASE_URLS=http://pipelines:9099
       - OPENAI_API_KEYS=0p3n-w3bu!
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - ENABLE_OLLAMA_API=False
+      - OLLAMA_BASE_URLS=
+      - DEFAULT_MODELS=aicerag
     restart: unless-stopped
     volumes:
       - open-webui:/app/backend/data
