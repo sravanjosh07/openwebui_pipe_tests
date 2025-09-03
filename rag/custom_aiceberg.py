@@ -273,7 +273,7 @@ class Pipeline:
         query_result = self.check_with_aiceberg(user_message, "user_query")
         if query_result.get("event_result", "passed") == "rejected":
             return self.valves.block_message
-        query_event_id = query_result.get("event_id")
+        u2a_event_id = query_result.get("event_id")
         redacted_user_message = query_result.get("redacted_text", user_message)
 
         # 2) Clean payload: override model and remove OpenWebUI-specific fields
@@ -284,20 +284,20 @@ class Pipeline:
         # 3) Replace latest user message with redacted version  
         # OpenWebUI bundles original user message before calling pipeline
         original_message = (payload.get("messages", messages) or []).copy()
-        updated_messages = []
+        updated_message = []
         if original_message and original_message[-1].get("role") == "user":
             print(f"🔄 Replacing: {original_message[-1]['content']} with: {redacted_user_message}")
             original_message[-1]["content"] = redacted_user_message
 
-        updated_messages = original_message
-        payload["messages"] = updated_messages
+        updated_message = original_message
+        payload["messages"] = updated_message
 
         # 4) Monitor complete agent-to-model prompt bundle
-        ab_messages_result = self.check_with_aiceberg(updated_messages, "agent_to_model_prompt")
-        redacted_agent_message = ab_messages_result.get("redacted_text", updated_messages)
+        ab_message_result = self.check_with_aiceberg(updated_message, "agent_to_model_prompt")
+        redacted_agent_message = ab_message_result.get("redacted_text", updated_message)
         payload["messages"] = redacted_agent_message
 
-        a2m_event_id = ab_messages_result.get("event_id")
+        a2m_event_id = ab_message_result.get("event_id")
 
         # 5) Call LLM provider (OpenAI/Anthropic)
         try:
@@ -319,8 +319,8 @@ class Pipeline:
 
         # 7) Mirror response to user-agent channel for UI consistency
         final_redacted_response = redacted_response
-        if query_event_id:
-            final_result = self.check_with_aiceberg(redacted_response, "final_response_to_user", query_event_id)
+        if u2a_event_id:
+            final_result = self.check_with_aiceberg(redacted_response, "final_response_to_user", u2a_event_id)
             final_redacted_response = final_result.get("redacted_text", redacted_response)
 
         print(f"Final redacted response: {final_redacted_response}")
