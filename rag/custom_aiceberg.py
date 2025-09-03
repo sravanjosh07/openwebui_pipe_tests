@@ -42,10 +42,6 @@ class Pipeline:
             default="gpt-3.5-turbo",
             description="OpenAI/Anthropic chat model to use (e.g. gpt-3.5-turbo, claude-sonnet-4-20250514)",
         )
-        emit_user_llm_output_mirror: bool = Field(
-            default=True,
-            description="Also mirror model reply as user_agt output (for legacy linking)",
-        )
         block_message: str = Field(
             default="Sorry, this content violates our safety policies.",
             description="Message returned when content is blocked",
@@ -53,7 +49,7 @@ class Pipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline and load configuration from environment variables."""
-        self.name = "AiceMonitor_clean"
+        self.name = "Custom AIceberg RAG Monitor"
         self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")
         self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")
         self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")
@@ -74,7 +70,6 @@ class Pipeline:
         self.AICEBERG_PROFILE_ID = self.valves.AICEBERG_PROFILE_ID
         self.target_model = self.valves.target_model
         self.target_model_provider = self.valves.target_model_provider
-        self.emit_user_llm_output_mirror = self.valves.emit_user_llm_output_mirror
         self.block_message = self.valves.block_message
 
     async def on_startup(self):
@@ -98,6 +93,7 @@ class Pipeline:
         except Exception:
             return str(content)
 
+
     def get_prompt_details(self, prompt_id: str) -> dict:
         """Retrieve prompt details including redacted text from AIceberg."""
         headers = {
@@ -117,61 +113,32 @@ class Pipeline:
             print(f"Prompt details API error: {exc}")
             return {}
 
-    def check_with_aiceberg(
-        self,
-        content: Union[str, Dict[str, Any], List[Any]],
-        phase: str,
-        event_id: Optional[str] = None,
-        extra_metadata: Optional[dict] = None,
-        profile_id: Optional[str] = None,
-    ) -> dict:
-        """Send content to AIceberg for monitoring and return the JSON response."""
-        phase_config = {
-            "user_query": {
-                "event_type": "user_agt",
-                "is_input": True,
-                "metadata": {"content_type": "user_message"},
-                "profile_id": self.valves.AB_monitoring_profile_U2A,
-            },
-            "complete_prompt": {
-                "event_type": "agt_llm",
-                "is_input": True,
-                "metadata": {"content_type": "complete_prompt_bundle"},
-                "profile_id": self.valves.AB_monitoring_profile_A2M,
-            },
-            "model_response": {
-                "event_type": "agt_llm",
-                "is_input": False,
-                "metadata": {"content_type": "model_reply"},
-                "profile_id": self.valves.AB_monitoring_profile_A2M,
-            },
-            "llm_response": {
-                "event_type": "user_agt",
-                "is_input": False,
-                "metadata": {"content_type": "model_reply_mirror"},
-                "profile_id": self.valves.AB_monitoring_profile_U2A,
-            },
-        }
-        config = phase_config.get(phase, {"event_type": "user_agt", "is_input": True})
+    def check_with_aiceberg(self, content, phase: str, event_id: str = None) -> dict:
+        """Send content to AIceberg for monitoring and return response with redacted text."""
+        # Configure based on phase
+        if phase == "user_query":
+            event_type, is_input = "user_agt", True
+            used_profile_id = self.valves.AB_monitoring_profile_U2A
+        elif phase == "agent_to_model_prompt":
+            event_type, is_input = "agt_llm", True  
+            used_profile_id = self.valves.AB_monitoring_profile_A2M
+        elif phase == "model_response":
+            event_type, is_input = "agt_llm", False
+            used_profile_id = self.valves.AB_monitoring_profile_A2M
+        elif phase == "final_response_to_user":
+            event_type, is_input = "user_agt", False
+            used_profile_id = self.valves.AB_monitoring_profile_U2A
+        else:
+            return {"event_result": "passed"}
 
-        # Use provided profile_id, config profile_id, or fallback to general profile
-        used_profile_id = profile_id or config.get("profile_id") or self.valves.AICEBERG_PROFILE_ID
-        
-        payload: Dict[str, Any] = {
+        payload = {
             "profile_id": used_profile_id,
-            "event_type": config["event_type"],
+            "event_type": event_type,
             "forward_to_llm": False,
-            "metadata": {"rag_phase": phase},
         }
-
-        # Merge phase-specific and extra metadata
-        if "metadata" in config:
-            payload["metadata"].update(config["metadata"])
-        if extra_metadata:
-            payload["metadata"].update(extra_metadata)
 
         text = self._to_text(content)
-        if config["is_input"]:
+        if is_input:
             payload["input"] = text
         else:
             payload["input"] = ""
@@ -193,14 +160,18 @@ class Pipeline:
             )
             response.raise_for_status()
             aiceberg_response = response.json()
+            print(f"✅ AIceberg {phase} response: {aiceberg_response}")
             
             # Get redacted text for both inputs and outputs
-            if "prompt_id" in aiceberg_response:
-                prompt_details = self.get_prompt_details(aiceberg_response["prompt_id"])
-                if config["is_input"] and "prompt" in prompt_details:
-                    aiceberg_response["redacted_text"] = prompt_details["prompt"]
-                elif not config["is_input"] and "response" in prompt_details:
-                    aiceberg_response["redacted_text"] = prompt_details["response"]
+            if "event_id" in aiceberg_response:
+                prompt_details = self.get_prompt_details(aiceberg_response["event_id"])
+                print(f"📋 Prompt details: {prompt_details}")
+                if is_input and "prompt" in prompt_details:
+                    aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["prompt"])
+                    print(f"Using redacted input: {aiceberg_response['redacted_text']}")
+                elif not is_input and "response" in prompt_details:
+                    aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["response"])
+                    print(f"Using redacted output: {aiceberg_response['redacted_text']}")
             
             return aiceberg_response
         except Exception as exc:
@@ -293,33 +264,42 @@ class Pipeline:
         print("--- RAG MONITOR (BUNDLE-STYLE) ---")
         print(f"User message: {user_message}")
 
-        # Skip internal synthetic tasks
+        # Skipping internal synthetic tasks
         if user_message.startswith("### Task:"):
-            print("Skipping internal task without RAG context.")
+            print("Skipping internal task.")
             return None
 
-        # 1) Record user query and get redacted text
+        # 1) Monitor raw user input separately from chat history for better detection coverage
         query_result = self.check_with_aiceberg(user_message, "user_query")
         if query_result.get("event_result", "passed") == "rejected":
             return self.valves.block_message
         query_event_id = query_result.get("event_id")
         redacted_user_message = query_result.get("redacted_text", user_message)
 
-        # 2) Build LLM payload with redacted content
+        # 2) Clean payload: override model and remove OpenWebUI-specific fields
         payload = {**body, "model": self.valves.target_model}
         for key in ("user", "chat_id", "title"):
             payload.pop(key, None)
 
-        # Update messages with redacted content
-        updated_messages = (payload.get("messages", messages) or []).copy()
-        if updated_messages and updated_messages[-1].get("role") == "user":
-            updated_messages[-1]["content"] = redacted_user_message
+        # 3) Replace latest user message with redacted version  
+        # OpenWebUI bundles original user message before calling pipeline
+        original_message = (payload.get("messages", messages) or []).copy()
+        updated_messages = []
+        if original_message and original_message[-1].get("role") == "user":
+            print(f"🔄 Replacing: {original_message[-1]['content']} with: {redacted_user_message}")
+            original_message[-1]["content"] = redacted_user_message
+
+        updated_messages = original_message
         payload["messages"] = updated_messages
 
-        bundle_result = self.check_with_aiceberg(updated_messages, "complete_prompt")
-        agt_event_id = bundle_result.get("event_id")
+        # 4) Monitor complete agent-to-model prompt bundle
+        ab_messages_result = self.check_with_aiceberg(updated_messages, "agent_to_model_prompt")
+        redacted_agent_message = ab_messages_result.get("redacted_text", updated_messages)
+        payload["messages"] = redacted_agent_message
 
-        # 3) Call provider
+        a2m_event_id = ab_messages_result.get("event_id")
+
+        # 5) Call LLM provider (OpenAI/Anthropic)
         try:
             if self.valves.target_model_provider == "openai":
                 response = self._call_openai(payload, body)
@@ -331,14 +311,17 @@ class Pipeline:
             print(f"LLM error: {exc}")
             return f"Error: {str(exc)}"
 
-        # 4) Record model response and get redacted version
+        # 6) Record model response and get redacted version
         redacted_response = response
-        if agt_event_id:
-            response_result = self.check_with_aiceberg(response, "model_response", agt_event_id)
-            redacted_response = response_result.get("redacted_text", response)
+        if a2m_event_id:
+            llm_response_result = self.check_with_aiceberg(response, "model_response", a2m_event_id)
+            redacted_response = llm_response_result.get("redacted_text", response)
 
-        # 5) Mirror response for legacy linkage
-        if self.valves.emit_user_llm_output_mirror and query_event_id:
-            self.check_with_aiceberg(redacted_response, "llm_response", query_event_id)
+        # 7) Mirror response to user-agent channel for UI consistency
+        final_redacted_response = redacted_response
+        if query_event_id:
+            final_result = self.check_with_aiceberg(redacted_response, "final_response_to_user", query_event_id)
+            final_redacted_response = final_result.get("redacted_text", redacted_response)
 
-        return redacted_response
+        print(f"Final redacted response: {final_redacted_response}")
+        return final_redacted_response
