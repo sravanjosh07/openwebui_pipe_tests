@@ -74,15 +74,25 @@ class Pipeline:
 
     async def on_startup(self):
         """Called when the pipeline starts up"""
-        print(f"🚀 AiceMonitor Pipeline starting up")
+        print("AiceMonitor Pipeline starting up")
 
     async def on_shutdown(self):
         """Called when the pipeline shuts down"""
-        print("🛑 AiceMonitor Pipeline shutting down")
+        print("AiceMonitor Pipeline shutting down")
 
     async def on_valves_updated(self):
         """executed when valves are updated."""
-        self.update_headers()    
+        self.update_headers()
+    
+    async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
+        """Filter incoming requests to capture chat_id from metadata."""
+        try:
+            chat_id = body.get("metadata", {}).get("chat_id")
+            print(f"Chat ID: {chat_id}")
+            return body
+        except Exception as e:
+            print(f"Inlet error: {e}")
+            return body    
 
     def _to_text(self, content: Union[str, Dict[str, Any], List[Any]]) -> str:
         """Normalize content to a compact JSON string (or pass through strings)."""
@@ -160,12 +170,12 @@ class Pipeline:
             )
             response.raise_for_status()
             aiceberg_response = response.json()
-            print(f"✅ AIceberg {phase} response: {aiceberg_response}")
+            # print(f"AIceberg {phase} response: {aiceberg_response}")
             
             # Get redacted text for both inputs and outputs
             if "event_id" in aiceberg_response:
                 prompt_details = self.get_prompt_details(aiceberg_response["event_id"])
-                print(f"📋 Prompt details: {prompt_details}")
+                # print(f"Prompt details: {prompt_details}")
                 if is_input and "prompt" in prompt_details:
                     aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["prompt"])
                     print(f"Using redacted input: {aiceberg_response['redacted_text']}")
@@ -262,14 +272,15 @@ class Pipeline:
         """Monitor and route chat completions to OpenAI or Anthropic."""
 
         print("--- AICEBERG MONITOR ---")
-        print(f"User message: {user_message}")
-        # print(f"messages: {messages}")
 
         # Skipping internal synthetic tasks
         if user_message.startswith("### Task:"):
             print("Skipping internal task.")
             return None
-
+        
+        print(f"User message: {user_message}")
+        # print(f"messages: {messages}")
+        
         # 1) Monitor raw user input separately from chat history for better detection coverage
         query_result = self.check_with_aiceberg(user_message, "user_query")
         if query_result.get("event_result", "passed") == "rejected":
