@@ -117,7 +117,7 @@ def fetch_prompt_details(event_id: str):
 if __name__ == "__main__":
     # Step 1: Test event API and get event_id
     # event_id, original_text = test_event_api()
-    event_id = "01JVZ483JD138PK48T2FYQ32V8"
+    event_id = "01K4DDQXF1CRWZT0RP8G998AM0"
     original_text = "Hello"
     # Step 2: Use event_id to fetch detailed prompt analysis
     if event_id and original_text:

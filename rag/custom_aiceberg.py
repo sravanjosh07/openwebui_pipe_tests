@@ -299,8 +299,12 @@ class Pipeline:
         
         # 1) Monitor user input with AIceberg and check for blocking
         query_result = self.check_with_aiceberg(user_message, "user_query")
-        if query_result.get("event_result", "passed") == "rejected":
-            query_result['redacted_text'] = "[Content Blocked]"
+        print(f"AIceberg user query result: {query_result}")
+        if query_result.get("event_result", "passed") == "blocked" or query_result.get("event_result") == "rejected":
+            # For blocked content, outlet needs original toxic message to find and replace with placeholder
+            blocked_placeholder = "[Content Blocked]"
+            self.original_user_message = user_message  # Keep original for outlet matching
+            self.redacted_user_message = blocked_placeholder  # Store placeholder for replacement
             return self.valves.block_message
         
         u2a_event_id = query_result.get("event_id")
@@ -313,6 +317,7 @@ class Pipeline:
         # 2) Openwebui uses payload to pass parameters to LLM API, so we modify it here
         # to replace original user message with redacted version.
         # We also ensure that model is picked from the valves.
+
         payload = {**body, "model": self.valves.target_model}
         # Popping them to avoid issues with openai API (preventive step to avoid unexpected fields)
         for key in ("user", "chat_id", "title"):
@@ -327,7 +332,7 @@ class Pipeline:
 
         payload["messages"] = cleaned_messages
 
-        # 4) Smart agent-to-model monitoring (only when RAG adds context)
+        # 4) agent-to-model monitoring (only when RAG adds context)
         a2m_event_id = None
         has_context_tags = any("<context>" in str(msg.get("content", "")) for msg in cleaned_messages)
         
@@ -347,7 +352,8 @@ class Pipeline:
             # Monitor reduced payload with already-redacted content
             ab_message_result = self.check_with_aiceberg(rag_payload_for_monitoring, "agent_to_model_prompt")
             a2m_event_id = ab_message_result.get("event_id")
-        # else: Simple chat scenario - skip agent→model monitoring (same as user→agent)
+            
+        # else: Simple chat scenario - skip agent-to-model monitoring (same as user→agent)
 
         # 5) Call LLM with redacted content
         try:
