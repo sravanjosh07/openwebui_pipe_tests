@@ -300,6 +300,7 @@ class Pipeline:
         # 1) Monitor user input with AIceberg and check for blocking
         query_result = self.check_with_aiceberg(user_message, "user_query")
         if query_result.get("event_result", "passed") == "rejected":
+            query_result['redacted_text'] = "[Content Blocked]"
             return self.valves.block_message
         
         u2a_event_id = query_result.get("event_id")
@@ -309,47 +310,39 @@ class Pipeline:
         self.original_user_message = user_message
         self.redacted_user_message = redacted_user_message
 
-        # 2) Update messages with redacted content for LLM processing
-        if messages and messages[-1].get("role") == "user":
-            messages[-1]["content"] = redacted_user_message
-
-        # 3) Prepare payload for LLM
+        # 2) Openwebui uses payload to pass parameters to LLM API, so we modify it here
+        # to replace original user message with redacted version.
+        # We also ensure that model is picked from the valves.
         payload = {**body, "model": self.valves.target_model}
         # Popping them to avoid issues with openai API (preventive step to avoid unexpected fields)
         for key in ("user", "chat_id", "title"):
             payload.pop(key, None)
 
-        # 3) Replace latest user message with redacted version and fix system prompt PII leak
-        # OpenWebUI bundles original user message before calling pipeline
-        original_message = (payload.get("messages", messages) or []).copy()
-        if original_message and original_message[-1].get("role") == "user":
-            original_message[-1]["content"] = redacted_user_message
-            
-        # Also replace any embedded user_query in system prompt with redacted version
-        for msg in original_message:
-            if msg.get("role") == "system":
-                system_content = msg.get("content", "")
-                system_content = system_content.replace(user_message, redacted_user_message)
-                msg["content"] = system_content
+        # Get messages from payload or fallback to messages parameter from pipe, then clean them
+        cleaned_messages = (payload.get("messages", messages) or []).copy()
+        # Replace original user message with redacted version everywhere
+        for msg in cleaned_messages:
+            if "content" in msg:
+                msg["content"] = msg["content"].replace(user_message, redacted_user_message)
 
-        payload["messages"] = original_message
+        payload["messages"] = cleaned_messages
 
         # 4) Smart agent-to-model monitoring (only when RAG adds context)
         a2m_event_id = None
-        has_context_tags = any("<context>" in str(msg.get("content", "")) for msg in original_message)
+        has_context_tags = any("<context>" in str(msg.get("content", "")) for msg in cleaned_messages)
         
         if has_context_tags:
             # RAG scenario: extract cleaned system + user messages for monitoring
             rag_payload_for_monitoring = []
             
             # Extract already-cleaned system message
-            for msg in original_message:
+            for msg in cleaned_messages:
                 if msg.get("role") == "system":
                     rag_payload_for_monitoring.append(msg)
             
             # Extract already-cleaned latest user message
-            if original_message and original_message[-1].get("role") == "user":
-                rag_payload_for_monitoring.append(original_message[-1])
+            if cleaned_messages and cleaned_messages[-1].get("role") == "user":
+                rag_payload_for_monitoring.append(cleaned_messages[-1])
             
             # Monitor reduced payload with already-redacted content
             ab_message_result = self.check_with_aiceberg(rag_payload_for_monitoring, "agent_to_model_prompt")
