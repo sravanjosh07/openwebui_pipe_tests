@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 # Load environment values from .env if present
 load_dotenv()
 
+
 class Pipeline:
     """A minimal pipeline for monitoring RAG in OpenWebUI.
 
@@ -26,11 +27,11 @@ class Pipeline:
         AICEBERG_API_URL: str = Field(default="", description="AIceberg events endpoint URL")
         AB_monitoring_profile_U2A: str = Field(
             default="",
-            description="AIceberg monitoring profile for user-to-agent"
+            description=" ab_monitoring_profile_U2A Profile ID"
         )
         AB_monitoring_profile_A2M: str = Field(
             default="",
-            description="AIceberg monitoring profile for agent-to-model"
+            description=" ab_monitoring_profile_A2M Profile ID"
         )
         AICEBERG_PROFILE_ID: str = Field(
             default="",
@@ -39,7 +40,7 @@ class Pipeline:
         target_model_provider: str = Field(default="openai", description="Model provider: openai or anthropic")
         target_model: str = Field(
             default="gpt-3.5-turbo",
-            description="OpenAI/Anthropic chat model to use",
+            description="OpenAI/Anthropic chat model to use (e.g. gpt-3.5-turbo, claude-sonnet-4-20250514)",
         )
         block_message: str = Field(
             default="Sorry, this content violates our safety policies.",
@@ -48,15 +49,10 @@ class Pipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline and load configuration from environment variables."""
-        self.name = "Custom AIceberg Monitor"
+        self.name = "Custom AIceberg Tools Monitor"
         self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")
         self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")
         self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")
-        
-        # Store redacted content for outlet usage
-        self.redacted_user_message = None
-        self.redacted_assistant_response = None
-        
         self.valves = self.Valves(
             AB_monitoring_profile_U2A=os.getenv("AB_monitoring_profile_U2A", ""),
             AB_monitoring_profile_A2M=os.getenv("AB_monitoring_profile_A2M", ""),
@@ -89,15 +85,14 @@ class Pipeline:
         self.update_headers()
     
     async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
-        """Capture metadata for processing."""
-        # chat_id is used to group messages in a chat session
-        # and is not exposed in the pipes, so we capture it here.
+        """Filter incoming requests to capture chat_id from metadata."""
         try:
-            self.current_chat_id = body.get("metadata", {}).get("chat_id")
-            print(f"Captured chat_id: {self.current_chat_id}")
+            chat_id = body.get("metadata", {}).get("chat_id")
+            print(f"Chat ID: {chat_id}")
             return body
-        except Exception:
-            return body
+        except Exception as e:
+            print(f"Inlet error: {e}")
+            return body    
 
     def _to_text(self, content: Union[str, Dict[str, Any], List[Any]]) -> str:
         """Normalize content to a compact JSON string (or pass through strings)."""
@@ -108,9 +103,7 @@ class Pipeline:
         except Exception:
             return str(content)
 
-###################   AIceberg prompt details   ##################
-# These methods handle calls to AIceberg's event and prompt details APIs.
-###############################################################
+
     def get_prompt_details(self, prompt_id: str) -> dict:
         """Retrieve prompt details including redacted text from AIceberg."""
         headers = {
@@ -130,13 +123,6 @@ class Pipeline:
             print(f"Prompt details API error: {exc}")
             return {}
 
-
-###################   AIceberg Monitoring Logic    ##################
-# this method handles sending content to AIceberg for monitoring
-# and returns the response including any redacted text.
-# tiny regex to redact SSN-like patterns in redacted text to mimic the redaction from aiceberg prompt api endpoint
-######################################################################
-
     def check_with_aiceberg(self, content, phase: str, event_id: str = None) -> dict:
         """Send content to AIceberg for monitoring and return response with redacted text."""
         # Configure based on phase
@@ -152,6 +138,12 @@ class Pipeline:
         elif phase == "final_response_to_user":
             event_type, is_input = "user_agt", False
             used_profile_id = self.valves.AB_monitoring_profile_U2A
+        elif phase == "agent_to_tool":
+            event_type, is_input = "agt_tool", True
+            used_profile_id = self.valves.AICEBERG_PROFILE_ID
+        elif phase == "tool_to_agent":
+            event_type, is_input = "agt_tool", False
+            used_profile_id = self.valves.AICEBERG_PROFILE_ID
         else:
             return {"event_result": "passed"}
 
@@ -184,14 +176,18 @@ class Pipeline:
             )
             response.raise_for_status()
             aiceberg_response = response.json()
+            # print(f"AIceberg {phase} response: {aiceberg_response}")
             
-            # Get redacted text from AIceberg
+            # Get redacted text for both inputs and outputs
             if "event_id" in aiceberg_response:
                 prompt_details = self.get_prompt_details(aiceberg_response["event_id"])
-                if is_input and "prompt" in prompt_details and prompt_details["prompt"]:
+                # print(f"Prompt details: {prompt_details}")
+                if is_input and "prompt" in prompt_details:
                     aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["prompt"])
-                elif not is_input and "response" in prompt_details and prompt_details["response"]:
+                    print(f"Using redacted input: {aiceberg_response['redacted_text']}")
+                elif not is_input and "response" in prompt_details:
                     aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["response"])
+                    print(f"Using redacted output: {aiceberg_response['redacted_text']}")
             
             return aiceberg_response
         except Exception as exc:
@@ -201,11 +197,6 @@ class Pipeline:
             except Exception:
                 pass
             return {"event_result": "passed"}
-
-
-###################   LLM Call Logic    ##################
-# These methods handle calls to OpenAI or Anthropic APIs.
-###########################################################
 
     def _call_openai(self, payload: dict, body: dict) -> str:
         """Send a chat completion request to OpenAI."""
@@ -277,144 +268,103 @@ class Pipeline:
             print(f"❌ Anthropic error: {str(e)}")
             return "Sorry, I'm having trouble connecting to the AI service."
 
-
-##################   Main Pipeline Logic    ##################
-# pipe() is called during chat completion processing in OpenWebUI.
-# It captures the payload that would be sent to the model, allowing
-# for monitoring and redaction before forwarding to the model API.
-###############################################################
-
     def pipe(
         self,
         user_message: str,
         model_id: str,
         messages: List[dict],
         body: dict,
+        __tools__: Optional[List[dict]] = None,
     ) -> Optional[str]:
-        """Main processing pipeline with AIceberg monitoring."""
-        
-        # Skip internal tasks - Openwebui uses "### Task:" prefix for system tasks to generate 3 similar prompts for user selection. 
+        """Monitor and route chat completions to OpenAI or Anthropic."""
+
+        print("--- AICEBERG MONITOR ---")
+
+        # Skipping internal synthetic tasks
         if user_message.startswith("### Task:"):
+            print("Skipping internal task.")
             return None
         
-        # 1) Monitor user input with AIceberg and check for blocking
+        # Tool monitoring
+        if __tools__:
+            tool_names = [tool.get('function', {}).get('name') for tool in __tools__]
+            print(f"Available tools: {tool_names}")
+        
+        # Check for tool calls in conversation
+        tool_calls = [msg for msg in messages if msg.get("tool_calls")]
+        tool_results = [msg for msg in messages if msg.get("role") == "tool"]
+        
+        if tool_calls or tool_results:
+            print(f"Tools used: {len(tool_calls)} calls, {len(tool_results)} results")
+            
+            # Monitor tool calls (agent → tool)
+            for call in tool_calls:
+                for tc in call.get("tool_calls", []):
+                    tool_name = tc.get('function', {}).get('name')
+                    tool_args = tc.get('function', {}).get('arguments')
+                    print(f"Tool called: {tool_name}")
+                    self.check_with_aiceberg(f"Tool: {tool_name}, Args: {tool_args}", "agent_to_tool")
+            
+            # Monitor tool results (tool → agent)  
+            for result in tool_results:
+                tool_call_id = result.get('tool_call_id')
+                tool_content = result.get('content', '')
+                print(f"Tool result: {tool_call_id}")
+                self.check_with_aiceberg(tool_content, "tool_to_agent")
+        
+        print(f"User message: {user_message}")
+        
+        # 1) Monitor raw user input separately from chat history for better detection coverage
         query_result = self.check_with_aiceberg(user_message, "user_query")
         if query_result.get("event_result", "passed") == "rejected":
             return self.valves.block_message
-        
         u2a_event_id = query_result.get("event_id")
         redacted_user_message = query_result.get("redacted_text", user_message)
-        
-        # Store original and redacted messages for outlet
-        self.original_user_message = user_message
-        self.redacted_user_message = redacted_user_message
 
-        # 2) Update messages with redacted content for LLM processing
-        if messages and messages[-1].get("role") == "user":
-            messages[-1]["content"] = redacted_user_message
-
-        # 3) Prepare payload for LLM
+        # 2) Clean payload: override model and remove OpenWebUI-specific fields
         payload = {**body, "model": self.valves.target_model}
         # Popping them to avoid issues with openai API (preventive step to avoid unexpected fields)
         for key in ("user", "chat_id", "title"):
             payload.pop(key, None)
 
-        # 3) Replace latest user message with redacted version and fix system prompt PII leak
+        # 3) Replace latest user message with redacted version  
         # OpenWebUI bundles original user message before calling pipeline
         original_message = (payload.get("messages", messages) or []).copy()
+        updated_message = []
         if original_message and original_message[-1].get("role") == "user":
+            # print(f"Replacing: {original_message[-1]['content']} with: {redacted_user_message}")
             original_message[-1]["content"] = redacted_user_message
-            
-        # Also replace any embedded user_query in system prompt with redacted version
-        for msg in original_message:
-            if msg.get("role") == "system":
-                system_content = msg.get("content", "")
-                system_content = system_content.replace(user_message, redacted_user_message)
-                msg["content"] = system_content
 
-        payload["messages"] = original_message
+        updated_message = original_message
+        payload["messages"] = updated_message
 
-        # 4) Smart agent-to-model monitoring (only when RAG adds context)
-        a2m_event_id = None
-        has_context_tags = any("<context>" in str(msg.get("content", "")) for msg in original_message)
-        
-        if has_context_tags:
-            # RAG scenario: extract cleaned system + user messages for monitoring
-            rag_payload_for_monitoring = []
-            
-            # Extract already-cleaned system message
-            for msg in original_message:
-                if msg.get("role") == "system":
-                    rag_payload_for_monitoring.append(msg)
-            
-            # Extract already-cleaned latest user message
-            if original_message and original_message[-1].get("role") == "user":
-                rag_payload_for_monitoring.append(original_message[-1])
-            
-            # Monitor reduced payload with already-redacted content
-            ab_message_result = self.check_with_aiceberg(rag_payload_for_monitoring, "agent_to_model_prompt")
-            a2m_event_id = ab_message_result.get("event_id")
-        # else: Simple chat scenario - skip agent→model monitoring (same as user→agent)
+        # 4) Monitor complete agent-to-model prompt bundle
+        ab_message_result = self.check_with_aiceberg(updated_message, "agent_to_model_prompt")
+        a2m_event_id = ab_message_result.get("event_id")
 
-        # 5) Call LLM with redacted content
+        # 5) Call LLM provider (OpenAI/Anthropic)
         try:
             if self.valves.target_model_provider == "openai":
-                print(f"Payload to OpenAI: {payload}")
                 response = self._call_openai(payload, body)
             elif self.valves.target_model_provider == "anthropic":
-                print(f"Payload to Anthropic: {payload}")
                 response = self._call_anthropic(payload)
             else:
                 raise ValueError(f"Unsupported provider: {self.valves.target_model_provider}")
         except Exception as exc:
+            print(f"LLM error: {exc}")
             return f"Error: {str(exc)}"
 
-        # 6) Monitor model response
+        # 6) Record model response and get redacted version
         redacted_response = response
         if a2m_event_id:
             llm_response_result = self.check_with_aiceberg(response, "model_response", a2m_event_id)
             redacted_response = llm_response_result.get("redacted_text", response)
 
-        # 7) Mirror response monitoring (both profiles should see same original content)
+        # 7) Mirror response to user-agent channel for UI consistency
         final_redacted_response = redacted_response
         if u2a_event_id:
-            # Send original response to maintain consistent signals across profiles.
-            final_result = self.check_with_aiceberg(response, "final_response_to_user", u2a_event_id)
+            final_result = self.check_with_aiceberg(redacted_response, "final_response_to_user", u2a_event_id)
             final_redacted_response = final_result.get("redacted_text", redacted_response)
-            
-        # Store original and redacted responses for outlet
-        self.original_assistant_response = response  # Original LLM response
-        self.redacted_assistant_response = final_redacted_response  # AIceberg-redacted version
 
+        print(f"Final redacted response: {final_redacted_response}")
         return final_redacted_response
-
-
-######################   Outlet Logic    ##################
-# outlet() is called before storing chat messages in the database.
-# It allows replacing original user messages and assistant responses
-# with their AIceberg-redacted versions for privacy compliance.
-###############################################################
-
-    async def outlet(self, body: dict, user: Optional[dict] = None) -> dict:
-        """Apply redacted content before database storage."""
-        try:
-            # Replace original user messages with AIceberg-redacted versions
-            messages = body.get("messages", [])
-            if messages and hasattr(self, 'original_user_message') and hasattr(self, 'redacted_user_message'):
-                for message in messages:
-                    if (message.get("role") == "user" and 
-                        message.get("content") == self.original_user_message):
-                        message["content"] = self.redacted_user_message
-                        
-            # Replace assistant responses with AIceberg-redacted versions  
-            choices = body.get("choices", [])
-            if choices and hasattr(self, 'original_assistant_response') and hasattr(self, 'redacted_assistant_response'):
-                for choice in choices:
-                    message = choice.get("message", {})
-                    if (message.get("content") == self.original_assistant_response):
-                        message["content"] = self.redacted_assistant_response
-                            
-            return body
-            
-        except Exception:
-            return body
