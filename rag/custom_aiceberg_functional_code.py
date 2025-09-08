@@ -48,7 +48,7 @@ class Pipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline and load configuration from environment variables."""
-        self.name = "Custom AIceberg Monitor with tools"
+        self.name = "Custom AIceberg Monitor"
         self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")
         self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")
         self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")
@@ -243,28 +243,6 @@ class Pipeline:
         else:
             return resp.json()["choices"][0]["message"]["content"]
 
-    def _has_tool_calls(self, response) -> bool:
-        """Simple check if response contains tool calls JSON."""
-        try:
-            return '"tool_calls"' in str(response) and '"name"' in str(response)
-        except Exception:
-            return False
-
-    def _extract_clean_query(self, user_message: str) -> str:
-        """Extract clean query from complex user message format."""
-        try:
-            # Handle format like: 'Query: History:\nUSER: """what is the weather in Houston?"""\nQuery: what is the weather in Houston?'
-            if "Query: History:" in user_message and 'USER: """' in user_message:
-                # Extract the part after the last "Query: "
-                parts = user_message.split("Query: ")
-                if len(parts) > 1:
-                    return parts[-1].strip()
-            
-            # Handle other potential formats or return as-is
-            return user_message.strip()
-        except Exception:
-            return user_message
-
     def _call_anthropic(self, payload: dict) -> str:
         """Send a chat completion request to Anthropic using the SDK."""
         print("Calling Anthropic API via SDK...")
@@ -319,45 +297,22 @@ class Pipeline:
         if user_message.startswith("### Task:"):
             return None
         
+        # 1) Monitor user input with AIceberg and check for blocking
+        query_result = self.check_with_aiceberg(user_message, "user_query")
+        print(f"AIceberg user query result: {query_result}")
+        if query_result.get("event_result", "passed") == "blocked" or query_result.get("event_result") == "rejected":
+            # For blocked content, outlet needs original toxic message to find and replace with placeholder
+            blocked_placeholder = "[Content Blocked]"
+            self.original_user_message = user_message  # Keep original for outlet matching
+            self.redacted_user_message = blocked_placeholder  # Store placeholder for replacement
+            return self.valves.block_message
         
-        # 1) Only create user->agent event for initial queries (not tool output processing)
-        u2a_event_id = None
-        redacted_user_message = user_message
+        u2a_event_id = query_result.get("event_id")
+        redacted_user_message = query_result.get("redacted_text", user_message)
         
-        # Always extract clean query first
-        clean_user_query = self._extract_clean_query(user_message)
-        
-        # Check if this is tool output processing stage
-        is_tool_output_stage = "Tool `" in user_message and "Output:" in user_message
-        
-        if is_tool_output_stage:
-            # Tool output stage - use stored user->agent event ID for final mirroring
-            u2a_event_id = getattr(self, 'stored_u2a_event_id', None)
-            print(f"🛠️ Tool output stage - using stored user->agent event: {u2a_event_id}")
-        else:
-            # This is an initial user query - create user->agent event with clean query
-            query_result = self.check_with_aiceberg(clean_user_query, "user_query")
-            print(f"AIceberg user query result: {query_result}")
-            if query_result.get("event_result", "passed") == "blocked" or query_result.get("event_result") == "rejected":
-                # For blocked content, outlet needs original toxic message to find and replace with placeholder
-                blocked_placeholder = "[Content Blocked]"
-                self.original_user_message = user_message  # Keep original for outlet matching
-                self.redacted_user_message = blocked_placeholder  # Store placeholder for replacement
-                return self.valves.block_message
-            
-            u2a_event_id = query_result.get("event_id")
-            redacted_clean_query = query_result.get("redacted_text", clean_user_query)
-            
-            # Always use just the redacted clean query, no history
-            redacted_user_message = redacted_clean_query
-            
-            # Store for later mirroring
-            self.stored_u2a_event_id = u2a_event_id
-        
-        # Store original and redacted messages for outlet (only for initial queries, not tool output processing)
-        if not is_tool_output_stage:
-            self.original_user_message = user_message
-            self.redacted_user_message = redacted_user_message
+        # Store original and redacted messages for outlet
+        self.original_user_message = user_message
+        self.redacted_user_message = redacted_user_message
 
         # 2) Openwebui uses payload to pass parameters to LLM API, so we modify it here
         # to replace original user message with redacted version.
@@ -373,25 +328,13 @@ class Pipeline:
         # Replace original user message with redacted version everywhere
         for msg in cleaned_messages:
             if "content" in msg:
-                if not is_tool_output_stage:
-                    # Stage 1: Replace the complex user message with clean redacted query
-                    msg["content"] = msg["content"].replace(user_message, redacted_user_message)
-                else:
-                    # Stage 2: Replace any occurrence of the original clean query with redacted version
-                    if hasattr(self, 'original_user_message') and hasattr(self, 'redacted_user_message'):
-                        original_clean_query = self._extract_clean_query(self.original_user_message)
-                        msg["content"] = msg["content"].replace(original_clean_query, self.redacted_user_message)
+                msg["content"] = msg["content"].replace(user_message, redacted_user_message)
 
         payload["messages"] = cleaned_messages
 
-        # 4) agent-to-model monitoring (RAG or Tools scenarios)
-        rag_event_id = None
-        tool_selection_event_id = None
-        tool_curation_event_id = None
-        
+        # 4) agent-to-model monitoring (only when RAG adds context)
+        a2m_event_id = None
         has_context_tags = any("<context>" in str(msg.get("content", "")) for msg in cleaned_messages)
-        has_tools_list = any("Available Tools:" in str(msg.get("content", "")) for msg in cleaned_messages if msg.get("role") == "system")
-        has_tool_output = any("Tool `" in str(msg.get("content", "")) and "Output:" in str(msg.get("content", "")) for msg in cleaned_messages)
         
         if has_context_tags:
             # RAG scenario: extract cleaned system + user messages for monitoring
@@ -408,37 +351,7 @@ class Pipeline:
             
             # Monitor reduced payload with already-redacted content
             ab_message_result = self.check_with_aiceberg(rag_payload_for_monitoring, "agent_to_model_prompt")
-            rag_event_id = ab_message_result.get("event_id")
-            
-        elif has_tools_list:
-            # Stage 1: Tool selection (agent->llm with tools list)
-            # Extract system (tools) + user messages for monitoring, like RAG context extraction
-            print("🔧 Stage 1: Tool selection")
-            tool_payload_for_monitoring = []
-            
-            # Extract system message with tools (like RAG context)
-            for msg in cleaned_messages:
-                if msg.get("role") == "system":
-                    tool_payload_for_monitoring.append(msg)
-            
-            # Extract latest user message with clean query
-            if cleaned_messages and cleaned_messages[-1].get("role") == "user":
-                tool_payload_for_monitoring.append(cleaned_messages[-1])
-            
-            # Monitor reduced payload with tools context (similar to RAG)
-            ab_message_result = self.check_with_aiceberg(tool_payload_for_monitoring, "agent_to_model_prompt")
-            tool_selection_event_id = ab_message_result.get("event_id")
-            print(f"🔧 Created tool selection event: {tool_selection_event_id}")
-            
-        elif has_tool_output:
-            # Stage 2: Tool output curation (agent->llm with tool execution results)
-            # The full message already contains the tool output context
-            print("🛠️ Stage 2: Tool output curation")
-            tool_output_payload_for_monitoring = cleaned_messages  # Already contains tool output context
-            
-            ab_message_result = self.check_with_aiceberg(tool_output_payload_for_monitoring, "agent_to_model_prompt")
-            tool_curation_event_id = ab_message_result.get("event_id")
-            print(f"🛠️ Created tool output curation event: {tool_curation_event_id}")
+            a2m_event_id = ab_message_result.get("event_id")
             
         # else: Simple chat scenario - skip agent-to-model monitoring (same as user→agent)
 
@@ -455,41 +368,21 @@ class Pipeline:
         except Exception as exc:
             return f"Error: {str(exc)}"
 
-        # 6) Monitor model response - use the correct event ID for each scenario
+        # 6) Monitor model response
         redacted_response = response
-        
-        if rag_event_id:
-            llm_response_result = self.check_with_aiceberg(response, "model_response", rag_event_id)
+        if a2m_event_id:
+            llm_response_result = self.check_with_aiceberg(response, "model_response", a2m_event_id)
             redacted_response = llm_response_result.get("redacted_text", response)
-            print(f"📄 Logged RAG response to event {rag_event_id}")
-            
-        elif tool_selection_event_id:
-            llm_response_result = self.check_with_aiceberg(response, "model_response", tool_selection_event_id)
-            redacted_response = llm_response_result.get("redacted_text", response)
-            print(f"🔧 Logged tool selection response to event {tool_selection_event_id}")
-            
-        elif tool_curation_event_id:
-            llm_response_result = self.check_with_aiceberg(response, "model_response", tool_curation_event_id)
-            redacted_response = llm_response_result.get("redacted_text", response)
-            print(f"🛠️ Logged tool curation response to event {tool_curation_event_id}")
-        
-        # 7) Mirror final responses from tool processing to user->agent
-        final_response = redacted_response
-        
-        # Only mirror Stage 2 (tool output processing) responses, not Stage 1 (tool selection)
-        should_mirror = has_tool_output or (not has_tools_list and not has_tool_output)  # Stage 2 or simple chat
-        
-        final_redacted_response = final_response
-        if u2a_event_id and should_mirror:
+
+        # 7) Mirror response monitoring (both profiles should see same original content)
+        final_redacted_response = redacted_response
+        if u2a_event_id:
             # Send original response to maintain consistent signals across profiles.
-            final_result = self.check_with_aiceberg(final_response, "final_response_to_user", u2a_event_id)
-            final_redacted_response = final_result.get("redacted_text", final_response)
-            print(f"🔄 Mirroring final response to user->agent event {u2a_event_id}")
-        else:
-            print(f"🚫 Not mirroring Stage 1 tool selection to user->agent")
+            final_result = self.check_with_aiceberg(response, "final_response_to_user", u2a_event_id)
+            final_redacted_response = final_result.get("redacted_text", redacted_response)
             
         # Store original and redacted responses for outlet
-        self.original_assistant_response = final_response  # Original LLM response
+        self.original_assistant_response = response  # Original LLM response
         self.redacted_assistant_response = final_redacted_response  # AIceberg-redacted version
 
         return final_redacted_response
@@ -507,17 +400,10 @@ class Pipeline:
             # Replace original user messages with AIceberg-redacted versions
             messages = body.get("messages", [])
             if messages and hasattr(self, 'original_user_message') and hasattr(self, 'redacted_user_message'):
-                # Extract clean query from original message for tool calls
-                original_clean_query = self._extract_clean_query(self.original_user_message)
-                
                 for message in messages:
-                    if message.get("role") == "user":
-                        # Check for exact match (direct user queries)
-                        if message.get("content") == self.original_user_message:
-                            message["content"] = self.redacted_user_message
-                        # Check for clean query match (tool calls in conversation history)
-                        elif message.get("content") == original_clean_query:
-                            message["content"] = self.redacted_user_message
+                    if (message.get("role") == "user" and 
+                        message.get("content") == self.original_user_message):
+                        message["content"] = self.redacted_user_message
                         
             # Replace assistant responses with AIceberg-redacted versions  
             choices = body.get("choices", [])
