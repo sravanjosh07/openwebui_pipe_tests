@@ -12,7 +12,8 @@ services:
     volumes:
       # - ./aicerag.py:/app/pipelines/aicerag.py  
       # - ./aiceberg_rag.py:/app/pipelines/aiceberg_rag.py 
-      - ./custom_aiceberg.py:/app/pipelines/custom_aiceberg.py     
+      - ./custom_aiceberg.py:/app/pipelines/custom_aiceberg.py
+      - ./custom_aiceberg_functional_code.py:/app/pipelines/custom_aiceberg_functional_code.py     
       - ./.env:/app/.env
 
   open-webui:
