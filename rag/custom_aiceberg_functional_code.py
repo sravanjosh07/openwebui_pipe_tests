@@ -48,7 +48,7 @@ class Pipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline and load configuration from environment variables."""
-        self.name = "Custom AIceberg Monitor"
+        self.name = "Custom AIceberg Monitor with RAG"
         self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")
         self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")
         self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")
@@ -58,8 +58,8 @@ class Pipeline:
         self.redacted_assistant_response = None
         
         self.valves = self.Valves(
-            AB_monitoring_profile_U2A=os.getenv("AB_monitoring_profile_U2A", ""),
-            AB_monitoring_profile_A2M=os.getenv("AB_monitoring_profile_A2M", ""),
+            AB_monitoring_profile_U2A=os.getenv("AB_monitoring_profile_U2A", ""), #01K46A3Zxxxxxx
+            AB_monitoring_profile_A2M=os.getenv("AB_monitoring_profile_A2M", ""), #01K46A3Zxxxxxx
             AICEBERG_PROFILE_ID=os.getenv("AICEBERG_PROFILE_ID", ""),
             AICEBERG_API_URL=os.getenv("AICEBERG_API_URL", "https://test.api.aiceberg.ai/eap/v0/event"),
             target_model_provider=os.getenv("MODEL_PROVIDER", "openai"),

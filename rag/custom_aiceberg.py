@@ -44,26 +44,26 @@ class Pipeline:
 
     def __init__(self) -> None:
         """Initialize the pipeline and load configuration from environment variables."""
-        self.name = "Custom AIceberg Monitor with tools"
-        self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")
-        self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")
-        self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")
+        self.name = "Custom AIceberg Monitor"
+        self.OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", "")         #sk-xxxxxx
+        self.AICEBERG_API_KEY=os.getenv("AICEBERG_API_KEY", "")     #Bearer eyJraWQxxxxx
+        self.ANTHROPIC_API_KEY=os.getenv("ANTHROPIC_API_KEY", "")   
         
         # attributes updated with each request, that help with monitoring and redaction
-        self.original_query = None  # The clean user query we monitor
-        self.redacted_query = None  # AIceberg-redacted version
-        self.original_response = None  # LLM response for outlet
+        self.original_query = None  # original user query
+        self.redacted_query = None  # AIceberg-redacted version of the original query
+        self.original_response = None  # LLM response
         self.redacted_response = None  # Redacted LLM response for outlet
         
         # Current user->agent event tracking for tool interactions
         self.current_user_agent_event_id = None
         
         self.valves = self.Valves(
-            AB_monitoring_profile_U2A=os.getenv("AB_monitoring_profile_U2A", ""),
-            AB_monitoring_profile_A2M=os.getenv("AB_monitoring_profile_A2M", ""),
-            AICEBERG_API_URL=os.getenv("AICEBERG_API_URL", "https://test.api.aiceberg.ai/eap/v0/event"),
-            target_model_provider=os.getenv("MODEL_PROVIDER", "openai"),
-            target_model=os.getenv("TARGET_MODEL", "gpt-3.5-turbo"),
+            AB_monitoring_profile_U2A=os.getenv("AB_monitoring_profile_U2A", ""), #01K46A3Zxxxxxx
+            AB_monitoring_profile_A2M=os.getenv("AB_monitoring_profile_A2M", ""), #01K46A3Zxxxxxx
+            AICEBERG_API_URL=os.getenv("AICEBERG_API_URL", "https://prod.api.aiceberg.ai/eap/v0/event"),
+            target_model_provider=os.getenv("MODEL_PROVIDER", "openai"), #openai or anthropic
+            target_model=os.getenv("TARGET_MODEL", "gpt-3.5-turbo"), #gpt-3.5-turbo, gpt-4, claude-2
         )
 
     def update_headers(self):
@@ -91,7 +91,7 @@ class Pipeline:
         """Capture chat_id for logging purposes."""
         try:
             chat_id = body.get("metadata", {}).get("chat_id")
-            print(f"📋 Chat ID: {chat_id}")
+            print(f"Chat ID: {chat_id}")
             return body
         except Exception:
             return body
@@ -105,11 +105,17 @@ class Pipeline:
         except Exception:
             return str(content)
 
+
+#######################   Helper Methods    ##################
+# These methods handle text extraction, tool call detection,
+# and interaction type detection.
+###############################################################
+
     def _has_tool_calls(self, response) -> bool:
         """Check if LLM response contains tool calls JSON."""
         try:
-            # Tool calls response format: {"tool_calls": [{"name": "...", "parameters": {...}}]}
-            return '"tool_calls"' in str(response) and '"name"' in str(response)
+            # Tool calls response format: {"tool_calls": [{"name": "...", "parameters": {...}}]} or {"tool_calls": []}
+            return '"tool_calls"' in str(response)
         except Exception:
             return False
 
@@ -151,7 +157,7 @@ class Pipeline:
                     return "tool_selection"
         
         return "direct"  # Simple chat
-    
+
         
 ###################   AIceberg prompt details   ##################
 # These methods handle calls to AIceberg's event and prompt details APIs.
@@ -166,7 +172,7 @@ class Pipeline:
         
         try:
             response = requests.get(
-                f"https://test.api.aiceberg.ai/ogma_agent/v2/prompt/{prompt_id}",
+                f"https://prod.api.aiceberg.ai/ogma_agent/v2/prompt/{prompt_id}",
                 headers=headers,
                 timeout=30,
             )
@@ -221,9 +227,11 @@ class Pipeline:
             "Content-Type": "application/json",
         }
 
+        print(f"AIceberg payload ({phase}): {payload}")
+        
         try:
             response = requests.post(
-                "https://test.api.aiceberg.ai/eap/v0/event",
+                "https://prod.api.aiceberg.ai/eap/v0/event",
                 json=payload,
                 headers=headers,
                 timeout=30,
@@ -238,6 +246,10 @@ class Pipeline:
                     aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["prompt"])
                 elif not is_input and "response" in prompt_details and prompt_details["response"]:
                     aiceberg_response["redacted_text"] = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "***", prompt_details["response"])
+                else:
+                    # Fallback: use original content if prompt details unavailable
+                    print(f"Using original content as fallback for event {aiceberg_response['event_id']}")
+                    aiceberg_response["redacted_text"] = self._to_text(content)
             
             return aiceberg_response
         except Exception as exc:
@@ -320,7 +332,7 @@ class Pipeline:
             )
 
         except Exception as e:
-            print(f"❌ Anthropic error: {str(e)}")
+            print(f"Anthropic error: {str(e)}")
             return "Sorry, I'm having trouble connecting to the AI service."
 
 
@@ -355,29 +367,33 @@ class Pipeline:
         interaction_type = self._detect_interaction_type(user_message, messages)
         self.original_query = self._extract_clean_query(user_message)
         
-        print(f"🔍 Interaction type: {interaction_type}")
+        print(f"Interaction type: {interaction_type}")
         
         # === STEP 2: Handle user->agent monitoring (only for new user queries) ===
         user_agent_event_id = None
         
+        # === STEP 2A: Check if we should reuse existing user->agent event (deduplication) ===
         if interaction_type == "tool_output":
-            # Stage 2: Use stored user->agent event from Stage 1
+            # Tool output always reuses the original user query event
             user_agent_event_id = self.current_user_agent_event_id
-            print(f"🛠️ Tool output stage - using stored event: {user_agent_event_id}")
+            print(f"Tool output stage - reusing user event: {user_agent_event_id}")
+        elif (interaction_type in ["direct", "rag"] and 
+              hasattr(self, 'current_user_agent_event_id') and self.current_user_agent_event_id and
+              hasattr(self, 'redacted_query') and self.redacted_query == self.original_query):
+            # Fallback from tool_selection with same query - reuse existing event
+            user_agent_event_id = self.current_user_agent_event_id
+            print(f"{interaction_type.title()} fallback - reusing user event: {user_agent_event_id}")
         else:
-            # New user query - monitor with AIceberg
+            # Create new user->agent event
             query_result = self.check_with_aiceberg(self.original_query, "user_query")
             print(f"AIceberg user query result: {query_result}")
             
             if query_result.get("event_result") in ["blocked", "rejected"]:
-                # Content blocked - store for outlet and return block message  
                 self.redacted_query = "[Content Blocked]"
                 return self.valves.block_message
             
             user_agent_event_id = query_result.get("event_id")
             self.redacted_query = query_result.get("redacted_text", self.original_query)
-            
-            # Store user->agent event ID for potential tool output mirroring
             self.current_user_agent_event_id = user_agent_event_id
         
         # === STEP 3: Prepare LLM payload with global redaction ===
@@ -396,20 +412,19 @@ class Pipeline:
         payload["messages"] = cleaned_messages
         
         # === STEP 4: Monitor agent->llm (for RAG and tools) ===
-        agent_event_id = None
+        agent_llm_event_id = None
         
         if interaction_type == "rag":
-            # Monitor system context + clean user query (no conversation history)
+            # Monitor system context + clean user query (no conversation history, no duplicates)
             monitoring_payload = []
             for msg in cleaned_messages:
                 if msg.get("role") == "system":
                     monitoring_payload.append(msg)
-                elif msg.get("role") == "user":
-                    # Use clean query instead of full message with history
-                    monitoring_payload.append({"role": "user", "content": self.original_query})
+            # Add only one clean user query (not repeated for each user message)
+            monitoring_payload.append({"role": "user", "content": self.redacted_query})
             result = self.check_with_aiceberg(monitoring_payload, "agent_to_model_prompt")
-            agent_event_id = result.get("event_id")
-            print(f"📄 Created RAG monitoring event: {agent_event_id}")
+            agent_llm_event_id = result.get("event_id")
+            print(f"Created RAG monitoring event: {agent_llm_event_id}")
             
         elif interaction_type == "tool_selection":
             # Monitor tool list + clean user query (no conversation history)
@@ -419,17 +434,17 @@ class Pipeline:
                     monitoring_payload.append(msg)
                 elif msg.get("role") == "user":
                     # Use clean query instead of full message with history
-                    monitoring_payload.append({"role": "user", "content": f"Query: {self.original_query}"})
+                    monitoring_payload.append({"role": "user", "content": f"Query: {self.redacted_query}"})
             result = self.check_with_aiceberg(monitoring_payload, "agent_to_model_prompt")
-            agent_event_id = result.get("event_id")
-            print(f"🔧 Created tool selection event: {agent_event_id}")
+            agent_llm_event_id = result.get("event_id")
+            print(f"🔧 Created tool selection event: {agent_llm_event_id}")
             
         elif interaction_type == "tool_output":
             # Monitor only the current tool output message, not full conversation history
             monitoring_payload = [{"role": "user", "content": user_message}]
             result = self.check_with_aiceberg(monitoring_payload, "agent_to_model_prompt")
-            agent_event_id = result.get("event_id")
-            print(f"🛠️ Created tool output event: {agent_event_id}")
+            agent_llm_event_id = result.get("event_id")
+            print(f"🛠️ Created tool output event: {agent_llm_event_id}")
         
         # === STEP 5: Call LLM ===
         try:
@@ -446,20 +461,29 @@ class Pipeline:
         
         # === STEP 6: Monitor LLM response ===
         final_response = llm_response
-        if agent_event_id:
-            response_result = self.check_with_aiceberg(llm_response, "model_response", agent_event_id)
+        if agent_llm_event_id:
+            response_result = self.check_with_aiceberg(llm_response, "model_response", agent_llm_event_id)
+            if response_result.get("event_result") in ["blocked", "rejected"]:
+                return self.valves.block_message
             final_response = response_result.get("redacted_text", llm_response)
-            print(f"✅ Logged LLM response to event {agent_event_id}")
+            print(f"Logged LLM response to event {agent_llm_event_id}")
         
         # === STEP 7: Mirror final response to user->agent (for meaningful responses) ===
-        if user_agent_event_id and interaction_type in ["direct", "rag", "tool_output"]:
+        if user_agent_event_id and interaction_type in ["direct", "rag", "tool_selection", "tool_output"]:
             # Only mirror final responses, not intermediate tool calls
             if not self._has_tool_calls(final_response):
                 mirror_result = self.check_with_aiceberg(final_response, "final_response_to_user", user_agent_event_id)
+                if mirror_result.get("event_result") in ["blocked", "rejected"]:
+                    return self.valves.block_message
                 final_response = mirror_result.get("redacted_text", final_response)
-                print(f"🔄 Mirrored final response to user event {user_agent_event_id}")
+                
+                # Log appropriate message
+                if interaction_type == "tool_output":
+                    print(f"Mirrored tool output final response to user event {user_agent_event_id}")
+                else:
+                    print(f"Mirrored final response to user event {user_agent_event_id}")
             else:
-                print(f"🚫 Not mirroring tool calls JSON to user->agent")
+                print(f"Not mirroring tool calls JSON to user->agent")
         
         # === STEP 8: Store for outlet ===
         self.original_response = llm_response
